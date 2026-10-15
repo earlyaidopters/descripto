@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { computeCuts, programDuration } from "./edl";
+import { deriveCuts, programDuration } from "./edl";
 import type { ProjectState } from "./types";
 
 // ── File-based project store ────────────────────────────────────────────────
@@ -53,7 +53,7 @@ export function listProjects(): { id: string; name: string; createdAt: string; d
     try {
       const st = loadProject(entry.name);
       if (st) {
-        out.push({ id: st.id, name: st.name, createdAt: st.createdAt, duration: programDuration(computeCuts(st.words), st.sourceDuration), transcribed: st.transcribed });
+        out.push({ id: st.id, name: st.name, createdAt: st.createdAt, duration: programDuration(deriveCuts(st), st.sourceDuration), transcribed: st.transcribed });
       }
     } catch {
       // corrupt dir — skip

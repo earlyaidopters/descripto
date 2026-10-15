@@ -5,7 +5,7 @@ import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { loadProject, projectDir, saveProject, statePath } from "@/lib/store";
-import { computeCuts, markFillers, programDuration } from "@/lib/edl";
+import { deriveCuts, markFillers, programDuration } from "@/lib/edl";
 
 export const runtime = "nodejs";
 export const maxDuration = 900;
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     saveProject(p);
     return NextResponse.json({
       reply: wordsDeleted ? `Removed ${wordsDeleted} detected filler word${wordsDeleted === 1 ? "" : "s"}. You can undo this edit or restore individual words.` : "There are no remaining detected filler words to remove.",
-      wordsDeleted, programDuration: programDuration(computeCuts(p.words), p.sourceDuration), turns: 0,
+      wordsDeleted, programDuration: programDuration(deriveCuts(p), p.sourceDuration), turns: 0,
     });
   }
   const before = p.words.filter((w) => !w.deleted).length;
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     saveProject(updated);
   }
   const after = updated ? updated.words.filter((w) => !w.deleted).length : before;
-  const cuts = updated ? computeCuts(updated.words) : computeCuts(p.words);
+  const cuts = updated ? deriveCuts(updated) : deriveCuts(p);
 
   return NextResponse.json({
     reply: finalText || "(agent finished without a summary)",

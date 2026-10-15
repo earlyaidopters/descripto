@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { loadProject, rendersDir, saveProject } from "@/lib/store";
-import { computeCuts, computeKeeps, programDuration } from "@/lib/edl";
+import { computeKeeps, deriveCuts, programDuration } from "@/lib/edl";
 import { probe, renderProgram } from "@/lib/ffmpeg";
 import { activeRender, findRender, startRender, cancelRender } from "@/lib/render-jobs";
 
@@ -20,7 +20,7 @@ export async function POST(_req: NextRequest, ctx: Context) {
   const active = activeRender(id);
   if (active) return NextResponse.json({ jobId: active.job.id });
   if (!p.transcribed) return NextResponse.json({ error: "transcribe first" }, { status: 400 });
-  const cuts = computeCuts(p.words);
+  const cuts = deriveCuts(p);
   const keeps = computeKeeps(cuts, p.sourceDuration);
   if (!keeps.length) return NextResponse.json({ error: "nothing to keep" }, { status: 400 });
   const useAuphonic = p.studioSound && preferences().audioProcessor === "auphonic";
@@ -33,7 +33,7 @@ export async function POST(_req: NextRequest, ctx: Context) {
       const info = await probe(p.sourceFile, signal);
       const cloudAudio = useAuphonic && info.hasAudio;
       if (cloudAudio && !audioKey) throw new Error("Add an Auphonic key in Settings → Connections or choose built-in Studio Sound.");
-      await renderProgram(p.sourceFile, out, keeps, { studioSound: p.studioSound && !cloudAudio, hasAudio: info.hasAudio, total, signal }, (frac, stage) => {
+      await renderProgram(p.sourceFile, out, keeps, { studioSound: p.studioSound && !cloudAudio, hasAudio: info.hasAudio, frameRate: info.frameRate, total, signal }, (frac, stage) => {
         if (signal.aborted) return;
         job.progress = Math.round(frac * (cloudAudio ? 65 : 100)); job.stage = stage;
       });

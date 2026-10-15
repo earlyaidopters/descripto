@@ -20,6 +20,14 @@ async function request(endpoint: string, key: string, init: RequestInit = {}): P
 }
 // Deliberately avoid presets: a user's preset may cut silence or add an intro,
 // which would desynchronize the finished audio from the edited video.
+// Auphonic serves finished files from its own hosts or, since October 2026,
+// from a pre-signed Cloudflare R2 bucket (<account>.r2.cloudflarestorage.com).
+// The bearer token is only ever sent to auphonic.com; the R2 link carries its
+// own signature in the query string.
+export function trustedDownloadHost(hostname: string): boolean {
+  return hostname === "auphonic.com" || hostname.endsWith(".auphonic.com") || /^[a-z0-9]+\.r2\.cloudflarestorage\.com$/.test(hostname);
+}
+
 export async function processAuphonicAudio(input: string, output: string, key: string, onStage: (stage: string) => void, options: { pollMs?: number; timeoutMs?: number; signal?: AbortSignal } = {}) {
   if (!key) throw new Error("Add your Auphonic key in Settings → Connections before rendering.");
   const signal = options.signal;
@@ -64,7 +72,7 @@ export async function processAuphonicAudio(input: string, output: string, key: s
     const location = download.headers.get("location");
     if (!location) throw new Error("Auphonic returned an incomplete download redirect.");
     const next = new URL(location, url);
-    if (next.protocol !== "https:" || !(next.hostname === "auphonic.com" || next.hostname.endsWith(".auphonic.com")) || next.username || next.password) throw new Error("Auphonic returned an unexpected download redirect.");
+    if (next.protocol !== "https:" || !trustedDownloadHost(next.hostname) || next.username || next.password) throw new Error("Auphonic returned an unexpected download redirect.");
     url = next;
   }
   if (!download?.ok || !download.body) throw new Error("Could not download the finished audio from Auphonic.");

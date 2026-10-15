@@ -14,6 +14,8 @@ export interface Word {
   deleted: boolean; // true = this word is cut from the program
   confidence?: number; // 0..1 from the ASR engine, when available
   filler?: boolean; // detected filler word
+  rawStart?: number; // ASR start before the audio-envelope snap (ADR-003)
+  rawEnd?: number; // ASR end before the audio-envelope snap (ADR-003)
 }
 
 export interface Paragraph {
@@ -30,12 +32,26 @@ export interface ProjectState {
   sourceWidth?: number;
   sourceHeight?: number;
   transcribed: boolean;
+  transcriptEngine?: string; // which ASR produced `words` (groq/... or local whisper)
   words: Word[];
   paragraphs: Paragraph[];
   studioSound: boolean; // apply audio enhancement on render
+  pauses?: { start: number; end: number }[]; // quiet stretches of the audio (ADR-004), from audio16k.wav
+  pausesVersion?: number; // detection version that produced `pauses`
+  tightenPauses?: PauseSettings; // "Tighten pauses" setting; absent = off
   lastRender?: RenderInfo;
   lastReview?: ReviewReport;
   lastAudit?: AuditReport;
+  aiRetakes?: AiRetakes; // last "AI check" for repeated takes (ADR-007); word ids, re-validated on read
+}
+
+export interface AiRetakePair { badIds: string[]; goodIds: string[]; confidence: number; reason: string; }
+export interface AiRetakes { at: string; model: string; pairs: AiRetakePair[]; }
+
+export interface PauseSettings {
+  enabled: boolean;
+  minGap: number; // seconds; only pauses at least this long are tightened
+  margin: number; // seconds of the pause kept on each side
 }
 
 export interface RenderInfo {

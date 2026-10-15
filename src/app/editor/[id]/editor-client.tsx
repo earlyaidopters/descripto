@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createPlaybackClock, EditedTimeline, VideoControls } from "@/components/edited-playback";
 import { Icon, StudioMark } from "@/components/studio-icon";
-import { computeCuts, programDuration, sourceToProgram, programToSource, type Range } from "@/lib/edl";
+import { DEFAULT_PAUSES, deriveCuts, pauseCuts, programDuration, sourceToProgram, programToSource, type Range } from "@/lib/edl";
+import type { PauseSettings } from "@/lib/types";
 import { nextPreviewTime } from "@/lib/preview";
+import { findRetakes } from "@/lib/retakes";
 import { fmtTime, type AuditReport, type ProjectState, type ReviewReport } from "@/lib/types";
 
-import { captureEdits, applyEdits, createEditQueue, type EditState } from "@/lib/edit-state";
+import { captureEdits, applyEdits, createEditQueue, validPauseSettings, type EditState } from "@/lib/edit-state";
 
 type Tab = "review" | "audit" | "agent";
 
@@ -40,6 +42,9 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
   }, (status, error) => { setSaveStatus(status); setSaveError(error || ""); }), [id]);
   const [search, setSearch] = useState("");
   const [hideCuts, setHideCuts] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(true);
+  const [aiCheck, setAiCheck] = useState<{ busy: boolean; note: string }>({ busy: false, note: "" });
+  const [capcutBusy, setCapcutBusy] = useState(false);
   const [review, setReview] = useState<ReviewReport | null>(initialProject.lastReview || null);
   const [audit, setAudit] = useState<AuditReport | null>(initialProject.lastAudit || null);
   const [agentCmd, setAgentCmd] = useState("");
@@ -81,13 +86,27 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
   const tabStopWord = words.find(w => w.id === focusedWord && (!hideCuts || !w.deleted))?.id || words.find(w => !hideCuts || !w.deleted)?.id;
   const searchTerm = search.trim().toLocaleLowerCase();
   const matches = words.filter(w => (!hideCuts || !w.deleted) && searchTerm && w.text.toLocaleLowerCase().includes(searchTerm));
-  const cuts: Range[] = useMemo(() => computeCuts(words), [words]);
+  const cuts: Range[] = useMemo(() => deriveCuts({ words, pauses: project.pauses, tightenPauses: project.tightenPauses }), [words, project.pauses, project.tightenPauses]);
+  const pauseSettings = project.tightenPauses ?? DEFAULT_PAUSES;
+  const tightened = useMemo(() => pauseCuts(words, project.pauses, { ...pauseSettings, enabled: true }), [words, project.pauses, pauseSettings]);
+  const tightenedSec = tightened.reduce((sum, c) => sum + c.end - c.start, 0);
   const progDur = useMemo(
     () => (project ? programDuration(cuts, project.sourceDuration) : 0),
     [cuts, project],
   );
   const deletedCount = words.filter((w) => w.deleted).length;
   const fillerCount = words.filter((w) => w.filler && !w.deleted).length;
+  const retakes = useMemo(() => findRetakes(words, project.pauses, cuts, project.aiRetakes), [words, project.pauses, cuts, project.aiRetakes]);
+  const retakeIds = useMemo(() => ({ bad: new Set(retakes.flatMap((r) => r.bad.wordIds)), good: new Set(retakes.filter((r) => r.kind !== "keyword").flatMap((r) => r.good.wordIds)) }), [retakes]);
+  // Like Auto Cut, the AI check runs on its own the first time a transcribed project opens; the
+  // button re-runs it. Proposals only, and the editor stays usable while it runs.
+  const aiAutoStarted = useRef(false);
+  useEffect(() => {
+    if (aiAutoStarted.current || !project.transcribed || project.aiRetakes) return;
+    aiAutoStarted.current = true;
+    void runAiCheck();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.transcribed, project.aiRetakes]);
 
   // ── mutations ────────────────────────────────────────────────────────────
   const snapshot = useCallback(() => {
@@ -125,6 +144,35 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
     setSelection(new Set());
   }
 
+  // AI check for repeated takes (ADR-007): headless Claude Code, proposals only.
+  async function runAiCheck() {
+    setAiCheck({ busy: true, note: "AI check running…" });
+    try {
+      const res = await fetch(`/api/projects/${id}/retakes`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `AI check failed (${res.status})`);
+      setProject((p) => (p ? { ...p, aiRetakes: body.aiRetakes } : p));
+      setAiCheck({ busy: false, note: `AI check: ${body.aiRetakes.pairs.length} proposed` });
+    } catch (e) {
+      setAiCheck({ busy: false, note: (e as Error).message });
+    }
+  }
+
+  // Export to CapCut (ADR-008): a new CapCut project with the current cuts, then CapCut opens.
+  async function exportCapcut() {
+    setCapcutBusy(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/capcut`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `CapCut export failed (${res.status})`);
+      setExportNotice(`CapCut project "${body.name}" created (${body.clips} clips).${body.launched ? " Opening CapCut…" : " Open CapCut to edit it."}`);
+    } catch (e) {
+      setExportNotice((e as Error).message);
+    } finally {
+      setCapcutBusy(false);
+    }
+  }
+
   async function fillers(deleteThem: boolean) {
     if (locked) return;
     snapshot();
@@ -132,6 +180,15 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
       if (w.filler) w.deleted = deleteThem;
     }
     refreshFromLocal();
+    persist();
+  }
+
+  function setPauses(next: PauseSettings) {
+    if (locked) return;
+    if (!validPauseSettings(next)) { setError("Keep each side shorter than half the minimum pause."); return; }
+    snapshot();
+    project.tightenPauses = next;
+    setProject((p) => (p ? { ...p, tightenPauses: next } : p));
     persist();
   }
 
@@ -524,6 +581,7 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
           <span className="topbar-divider" />
           {project.transcribed && <a href={`/api/projects/${id}/srt`} onClick={e => { if (actionDisabled) e.preventDefault(); }} aria-disabled={actionDisabled} className="btn-ghost captions-link" title="Download SRT captions"><Icon name="text" size={16} /> Captions</a>}
           {renderProg && <button className="btn-danger" onClick={() => void stopExport()} disabled={cancellingRender}>{cancellingRender ? "Stopping…" : "Cancel export"}</button>}
+          <button onClick={() => void exportCapcut()} disabled={!project.transcribed || actionDisabled || capcutBusy || progDur === 0 || !project.sourceWidth} className="btn-soft" title="Create a CapCut project with these cuts and open CapCut">{capcutBusy ? "Sending to CapCut…" : "Edit in CapCut"}</button>
           <button onClick={render} disabled={!project.transcribed || actionDisabled || progDur === 0 || !project.sourceWidth} className="btn-accent export-button"><Icon name="download" size={16} />{renderProg ? `Exporting ${renderProg.pct}%` : "Export video"}</button>
         </div>
       </header>
@@ -561,7 +619,7 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
           </div>
           {/* script document */}
           <div className="script" id="transcript" tabIndex={-1}>
-            <div className="document-title"><span className="eyebrow">THE SCRIPT</span><h1>{project.name}</h1><p>{project.transcribed ? "Click a word to play. Drag or Shift-click to select; Delete to cut." : "Turn your recording into a script you can edit."}</p></div>
+            <div className="document-title"><span className="eyebrow">THE SCRIPT</span><h1>{project.name}</h1><p>{project.transcribed ? `Click a word to play. Drag or Shift-click to select; Delete to cut.${project.transcriptEngine ? ` Transcribed by ${project.transcriptEngine}.` : ""}` : "Turn your recording into a script you can edit."}</p></div>
             {!project.transcribed ? (
               <div className="transcript-empty">
                 <span className="empty-icon"><Icon name="wave" size={30} /></span><h2>Every edit starts with a word.</h2><p>Transcribe your recording to find, trim and refine your story.</p>
@@ -594,7 +652,7 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
                             <span
                               key={w.id}
                               id={`word-${w.id}`}
-                              className={`word ${w.deleted ? "deleted" : ""} ${w.filler ? "filler" : ""} ${activeWord.current === w.id ? "active" : ""} ${selection.has(w.id) ? "selected" : ""} ${matches[matchIndex]?.id === w.id ? "current-match" : ""} ${searchTerm && w.text.toLocaleLowerCase().includes(searchTerm) ? "search-match" : ""}`}
+                              className={`word ${w.deleted ? "deleted" : ""} ${w.filler ? "filler" : ""} ${retakeIds.bad.has(w.id) ? "retake-bad" : retakeIds.good.has(w.id) ? "retake-good" : ""} ${activeWord.current === w.id ? "active" : ""} ${selection.has(w.id) ? "selected" : ""} ${matches[matchIndex]?.id === w.id ? "current-match" : ""} ${searchTerm && w.text.toLocaleLowerCase().includes(searchTerm) ? "search-match" : ""}`}
                               role="button"
                               tabIndex={w.id === tabStopWord ? 0 : -1}
                               onFocus={() => setFocusedWord(w.id)}
@@ -651,9 +709,11 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
 
         {/* ── right: player + actions ── */}
         <aside className="inspector">
-          <div className="panel-heading"><span><Icon name="film" size={16} /> Preview</span><span className="panel-heading-meta">{project.sourceWidth && project.sourceHeight ? `${project.sourceWidth} × ${project.sourceHeight}` : "Media"}</span></div>
-          {/* player */}
-          <div className="preview-panel">
+          <button type="button" className="panel-heading panel-toggle" aria-expanded={previewOpen} onClick={() => setPreviewOpen(o => !o)}><span><Icon name="film" size={16} /> Preview</span><span className="panel-heading-meta">{project.sourceWidth && project.sourceHeight ? `${project.sourceWidth} × ${project.sourceHeight}` : "Media"}<Icon name="chevron" size={14} style={{ transform: previewOpen ? "none" : "rotate(-90deg)" }} /></span></button>
+          {/* export download sits outside the collapsible preview so it stays reachable */}
+          {hasRender && <div className="export-download export-download-top"><span>{exportCurrent ? "Export matches current cuts" : "Last export · earlier edit"}</span><a className="btn-soft" href={`/api/projects/${id}/media?render=1&download=1`}><Icon name="download" size={14} /> Download MP4</a></div>}
+          {/* player: collapsed with CSS only, so the video stays mounted and word clicks still play */}
+          <div className="preview-panel" hidden={!previewOpen}>
             <div className="preview-tabs">
               <button
                 onClick={() => switchPreview("source")}
@@ -677,7 +737,6 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
             <p className="mt-2 text-[11px] text-[var(--text-dim)]">
               {playMode === "source" ? "Your cuts are applied live. Ready to export anytime." : exportCurrent ? "Watching your current export." : "Earlier export. Switch to Live preview to see your latest cuts."}
             </p>
-            {hasRender && <div className="export-download"><span>{exportCurrent ? "Export matches current cuts" : "Last export · earlier edit"}</span><a className="btn-soft" href={`/api/projects/${id}/media?render=1&download=1`}><Icon name="download" size={14} /> Download MP4</a></div>}
             {!project.sourceWidth && <p className="muted text-[11px]">Audio recordings support transcription and captions. MP4 export requires a video.</p>}
           </div>
 
@@ -709,6 +768,54 @@ export default function EditorClient({ id, initialProject }: { id: string; initi
               <div className="mt-2.5 flex gap-2">
                 <button onClick={() => fillers(true)} disabled={!fillerCount || actionDisabled} className="btn-soft px-3 py-1 text-[12px]">Remove all</button>
                 <button onClick={() => fillers(false)} disabled={!words.some(w => w.filler && w.deleted) || actionDisabled} className="btn-soft px-3 py-1 text-[12px]">Restore all</button>
+              </div>
+            </div>
+
+            {/* Repeated takes card (ADR-006) */}
+            <div className="card refinement-card">
+              <div className="flex items-center justify-between">
+                <p className="text-[13px] font-medium">Repeated takes</p>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={runAiCheck} disabled={actionDisabled || aiCheck.busy} className="btn-soft px-2 py-0.5 text-[11px]" title="Ask Claude to find repeats the local check missed">{aiCheck.busy ? "Checking…" : "AI check"}</button>
+                  {retakes.length > 1 && <button type="button" onClick={() => setDeleted(retakes.flatMap((r) => r.bad.wordIds), true)} disabled={actionDisabled} className="btn-soft px-2 py-0.5 text-[11px]">Cut all</button>}
+                  <span className="filler-count">{retakes.length}</span>
+                </div>
+              </div>
+              <p className="mt-0.5 text-[11px] leading-snug text-[var(--text-dim)]">Earlier attempts in red, the take that stays in green. Nothing is cut until you choose.</p>
+              {aiCheck.note && <p className="mt-1 text-[11px] text-[var(--text-dim)]" role="status">{aiCheck.note}</p>}
+              {retakes.length > 0 && <ul className="retake-list mt-2 space-y-1.5">
+                {retakes.map((r) => (
+                  <li key={r.bad.wordIds[0]} className="flex items-start gap-2 text-[11px]">
+                    <button type="button" className="retake-text min-w-0 flex-1 text-left" title={`${r.reason ? `AI: ${r.reason}\n` : ""}Keeps: ${r.good.text}`} onClick={() => seekSource(r.bad.start)}>
+                      <span className="tabular-nums text-[var(--text-dim)]">{fmtTime(sourceToProgram(cuts, r.bad.start))}</span> {r.kind === "ai" && <span className="retake-ai-tag">AI</span>} <span className="retake-bad-text">{r.bad.text.length > 70 ? r.bad.text.slice(0, 70) + "…" : r.bad.text}</span>
+                    </button>
+                    <button type="button" onClick={() => setDeleted(r.bad.wordIds, true)} disabled={actionDisabled} className="btn-soft shrink-0 px-2 py-0.5 text-[11px]">Cut</button>
+                  </li>
+                ))}
+              </ul>}
+            </div>
+
+            {/* Tighten pauses card (ADR-004) */}
+            <div className="card refinement-card">
+              <div className="flex items-center justify-between">
+                <p className="text-[13px] font-medium">Tighten pauses</p>
+                <button
+                  type="button" role="switch" aria-label="Tighten pauses" aria-checked={pauseSettings.enabled}
+                  className={`switch ${pauseSettings.enabled ? "on" : ""}`}
+                  disabled={actionDisabled || !project.pauses}
+                  onClick={() => setPauses({ ...pauseSettings, enabled: !pauseSettings.enabled })}
+                />
+              </div>
+              <p className="mt-0.5 text-[11px] leading-snug text-[var(--text-dim)]">
+                {!project.pauses ? "Pauses are not analyzed for this project yet." : `${tightened.length} pause${tightened.length === 1 ? "" : "s"} · ${tightenedSec.toFixed(1)}s ${pauseSettings.enabled ? "removed" : "to remove"}. Only stretches quieter than speech are shortened.`}
+              </p>
+              <div className="mt-2.5 flex gap-3 text-[11px] text-[var(--text-dim)]">
+                <label className="flex items-center gap-1">Pauses over
+                  <input type="number" min={0.3} max={60} step={0.1} value={pauseSettings.minGap} disabled={actionDisabled || !project.pauses} className="w-14 rounded border border-[var(--border)] bg-transparent px-1 py-0.5"
+                    onChange={(e) => setPauses({ ...pauseSettings, minGap: Number(e.target.value) })} />s</label>
+                <label className="flex items-center gap-1">Keep
+                  <input type="number" min={0} max={30} step={0.05} value={pauseSettings.margin} disabled={actionDisabled || !project.pauses} className="w-14 rounded border border-[var(--border)] bg-transparent px-1 py-0.5"
+                    onChange={(e) => setPauses({ ...pauseSettings, margin: Number(e.target.value) })} />s each side</label>
               </div>
             </div>
 
