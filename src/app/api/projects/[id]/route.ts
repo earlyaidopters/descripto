@@ -1,9 +1,10 @@
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
 import { loadProject, saveProject, projectDir } from "@/lib/store";
-import { computeCuts, programDuration } from "@/lib/edl";
-
-import { applyEdits, type EditState } from "@/lib/edit-state";
+import { deriveCuts, programDuration } from "@/lib/edl";
+import { PAUSE_ANALYSIS_VERSION, pausesFromWav } from "@/lib/transcribe";
+import { applyEdits, validPauseSettings, type EditState } from "@/lib/edit-state";
+import type { PauseSettings } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -12,7 +13,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params;
   const p = loadProject(id);
   if (!p) return NextResponse.json({ error: "not found" }, { status: 404 });
-  const cuts = computeCuts(p.words);
+  // Projects transcribed before ADR-004, or analyzed by an older detector: analyze the WAV once.
+  if (p.transcribed && p.pausesVersion !== PAUSE_ANALYSIS_VERSION) {
+    const analyzed = pausesFromWav(`${projectDir(p.id)}/audio16k.wav`);
+    if (analyzed) { p.pauses = analyzed.pauses; p.speech = analyzed.speech; p.pausesVersion = PAUSE_ANALYSIS_VERSION; saveProject(p); }
+  }
+  const cuts = deriveCuts(p);
   return NextResponse.json({
     project: p,
     cuts,
@@ -22,10 +28,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
 interface Mutation {
   edit?: EditState;
-  op: "setEditState" | "setDeleted" | "restore" | "restoreAll" | "deleteFillers" | "restoreFillers" | "applyCorrection" | "setStudioSound";
+  op: "setEditState" | "setDeleted" | "restore" | "restoreAll" | "deleteFillers" | "restoreFillers" | "applyCorrection" | "setStudioSound" | "setPauses";
   wordIds?: string[];
   deleted?: boolean;
   studioSound?: boolean;
+  tightenPauses?: PauseSettings;
   correction?: { wordId: string; suggested: string };
 }
 
@@ -77,12 +84,16 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     case "setStudioSound":
       p.studioSound = body.studioSound ?? false;
       break;
+    case "setPauses":
+      if (!validPauseSettings(body.tightenPauses)) return NextResponse.json({ error: "Invalid pause settings. Keep each side shorter than half the minimum pause." }, { status: 400 });
+      p.tightenPauses = { ...body.tightenPauses };
+      break;
     default:
       return NextResponse.json({ error: "unknown op" }, { status: 400 });
   }
 
   saveProject(p);
-  const cuts = computeCuts(p.words);
+  const cuts = deriveCuts(p);
   return NextResponse.json({ ok: true, cuts, programDuration: programDuration(cuts, p.sourceDuration) });
 }
 

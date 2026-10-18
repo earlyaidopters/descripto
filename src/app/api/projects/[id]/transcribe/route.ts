@@ -18,6 +18,10 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     p.words = result.words;
     p.paragraphs = buildParagraphs(result.words);
     p.transcribed = true;
+    p.transcriptEngine = result.engine;
+    p.pauses = result.pauses;
+    p.speech = result.speech;
+    p.pausesVersion = result.pausesVersion;
     saveProject(p);
     return NextResponse.json({ ok: true, engine: result.engine, wordCount: result.words.length });
   } catch (e) {

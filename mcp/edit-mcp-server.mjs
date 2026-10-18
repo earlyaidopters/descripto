@@ -65,6 +65,7 @@ server.registerTool(
           deletedWords: cutsOf(p.words),
           fillerWords: p.words.filter((w) => w.filler).length,
           studioSound: p.studioSound,
+          tightenPauses: p.tightenPauses ?? { enabled: false },
           transcribed: p.transcribed,
           note: "Times are SOURCE-media seconds. Deleted words (D) are cut from the rendered program. Filler words are marked F.",
         }, null, 2),
@@ -202,7 +203,7 @@ server.registerTool(
   "remove_filler_words",
   {
     title: "Remove all filler words",
-    description: "Mark every detected filler word (um, uh, you know, like, basically...) as deleted.",
+    description: "Mark every detected filler word (um, uh, you know, basically...) as deleted.",
     inputSchema: {},
   },
   async () => {
@@ -216,6 +217,49 @@ server.registerTool(
     }
     save(p);
     return { content: [{ type: "text", text: `deleted ${n} filler word(s)` }] };
+  },
+);
+
+server.registerTool(
+  "remove_silences",
+  {
+    title: "Tighten pauses",
+    description: "Turn on (or off) shortening of long pauses: quiet stretches of the audio (decided by audio level alone; transcribed words do not block a pause), at least minGap seconds long, keeping margin seconds on each side. Pauses are analyzed when the project is transcribed or first opened in the editor.",
+    inputSchema: {
+      enabled: z.boolean().default(true).describe("true to tighten pauses, false to keep them"),
+      minGap: z.number().min(0.3).max(60).default(1.0).describe("only pauses at least this many seconds long"),
+      margin: z.number().min(0).max(30).default(0.25).describe("seconds of each pause to keep on each side"),
+    },
+  },
+  async ({ enabled, minGap, margin }) => {
+    if (margin * 2 >= minGap) return { content: [{ type: "text", text: "margin must be less than half of minGap" }], isError: true };
+    const p = load();
+    p.tightenPauses = { enabled, minGap, margin };
+    save(p);
+    const ready = Array.isArray(p.pauses);
+    return { content: [{ type: "text", text: `tighten pauses ${enabled ? "on" : "off"} (pauses over ${minGap}s, keep ${margin}s each side)${ready ? "" : ". Pauses are not analyzed yet: open the project in the editor once."}` }] };
+  },
+);
+
+server.registerTool(
+  "find_retakes",
+  {
+    title: "Find repeated takes",
+    description: "List repeated takes: an earlier attempt at a phrase (bad) followed by the take to keep (good), found by the same local detector the editor highlights (ADR-006). Read-only; delete a bad take's word ids with delete_words only if the user asked for cuts.",
+    inputSchema: {},
+  },
+  async () => {
+    let lib;
+    try {
+      lib = { retakes: await import("../src/lib/retakes.ts"), edl: await import("../src/lib/edl.ts") };
+    } catch (e) {
+      return { content: [{ type: "text", text: `retake detector unavailable on this Node (${process.version}; needs TypeScript type stripping): ${e.message}` }], isError: true };
+    }
+    const p = load();
+    const found = lib.retakes.findRetakes(p.words, p.pauses, lib.edl.deriveCuts(p));
+    if (!found.length) return { content: [{ type: "text", text: "no repeated takes found" }] };
+    const line = (r) => `${r.kind} ${r.similarity} | BAD ${r.bad.start.toFixed(2)}s [${r.bad.wordIds[0]}..${r.bad.wordIds[r.bad.wordIds.length - 1]}] "${r.bad.text}" | KEEP ${r.good.start.toFixed(2)}s "${r.good.text}"`;
+    return { content: [{ type: "text", text: found.map(line).join("\n") }] };
   },
 );
 

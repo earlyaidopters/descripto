@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadProject, saveProject } from "@/lib/store";
-import { computeCuts } from "@/lib/edl";
+import { deriveCuts } from "@/lib/edl";
 import { reviewVideo } from "@/lib/gemini";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (!p.lastRender) return NextResponse.json({ error: "render first — Gemini reviews the rendered program" }, { status: 400 });
 
   try {
-    const cuts = computeCuts(p.words);
+    const cuts = deriveCuts(p);
     const report = await reviewVideo(p.lastRender.file, p.lastRender.duration, cuts.length);
     p.lastReview = report;
     saveProject(p);

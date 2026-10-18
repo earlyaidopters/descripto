@@ -120,7 +120,19 @@ test('Auphonic follows media-host redirects and rejects credential redirects els
   await processAuphonicAudio(input, output, 'fake-token', () => {});
   assert.equal(fs.readFileSync(output, 'utf8'), 'redirected-audio');
   const goodFetch = global.fetch;
+  // Since 2026-10 Auphonic redirects downloads to a pre-signed Cloudflare R2 URL.
+  global.fetch = async (url, init) => {
+    if (String(url).startsWith('https://auphonic.com/api/download/')) return new Response(null, { status: 302, headers: { location: 'https://ab7e85693fce51fdca76bafbd20afa6a.r2.cloudflarestorage.com/bucket/finished.flac?X-Amz-Signature=abc' } });
+    if (String(url).includes('.r2.cloudflarestorage.com/')) { assert.equal(init.headers, undefined); assert.equal(String(url).includes('fake-token'), false); return new Response('r2-audio'); }
+    return goodFetch(url, init);
+  };
+  await processAuphonicAudio(input, output, 'fake-token', () => {});
+  assert.equal(fs.readFileSync(output, 'utf8'), 'r2-audio');
   global.fetch = async (url, init) => String(url).startsWith('https://auphonic.com/api/download/') ? new Response(null, { status: 302, headers: { location: 'https://evil.test/steal' } }) : goodFetch(url, init);
+  await assert.rejects(processAuphonicAudio(input, output, 'fake-token', () => {}), /unexpected download redirect/);
+  global.fetch = async (url, init) => String(url).startsWith('https://auphonic.com/api/download/') ? new Response(null, { status: 302, headers: { location: 'https://evil.r2.cloudflarestorage.com.attacker.test/x' } }) : goodFetch(url, init);
+  await assert.rejects(processAuphonicAudio(input, output, 'fake-token', () => {}), /unexpected download redirect/);
+  global.fetch = async (url, init) => String(url).startsWith('https://auphonic.com/api/download/') ? new Response(null, { status: 302, headers: { location: 'https://notauphonic.com/x' } }) : goodFetch(url, init);
   await assert.rejects(processAuphonicAudio(input, output, 'fake-token', () => {}), /unexpected download redirect/);
   global.fetch = originalFetch;
 });

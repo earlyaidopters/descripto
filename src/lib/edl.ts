@@ -1,4 +1,4 @@
-import type { Word, Paragraph } from "./types";
+import type { Word, Paragraph, PauseSettings } from "./types";
 
 // ── Edit decision list math ─────────────────────────────────────────────────
 // Deleted words become time ranges to cut from the source. Ranges are padded
@@ -42,6 +42,105 @@ export function computeCuts(words: Word[]): Range[] {
     }
   }
   return merged;
+}
+
+// ── Tighten pauses (ADR-004) ──────────────────────────────────────────────────
+export const DEFAULT_PAUSES: PauseSettings = { enabled: false, minGap: 1.0, margin: 0.25 };
+
+// Pauses come from the audio alone (findQuietRegions): whisper stretches words
+// across silence and invents words on it, so a word inside a pause does not veto it.
+export function pauseCuts(words: Word[], pauses: Range[] | undefined, settings: PauseSettings | undefined): Range[] {
+  if (!settings?.enabled || !pauses?.length) return [];
+  const out: Range[] = [];
+  for (const p of pauses) {
+    if (p.end - p.start + 1e-9 < settings.minGap) continue; // tolerance: an exact-minGap pause qualifies at any position
+    const start = p.start + settings.margin, end = p.end - settings.margin;
+    if (end - start + 1e-9 >= MIN_CUT) out.push({ start, end });
+  }
+  return out;
+}
+
+// ── Gap cuts (ADR-010) ───────────────────────────────────────────────────────
+// Auto Cut's polarity (capcut ADR-033): a transcript gap between kept words is
+// cut whole unless its interior holds a sustained speech-level run (`speech`,
+// from findSpeechRuns) that no deleted word accounts for. Breaths and room noise
+// never sustain 200 ms above -35 dBFS, so they do not save a gap the way they
+// fragment the quiet-region detector.
+const GAP_SPEECH_TOLERANCE = 0.05; // seconds of unexplained speech inside a gap that vetoes it
+
+export function gapCuts(words: Word[], speech: Range[] | undefined, settings: PauseSettings | undefined, sourceDuration?: number): Range[] {
+  if (!settings?.enabled || !speech) return [];
+  const kept = words.filter((w) => !w.deleted).sort((a, b) => a.start - b.start);
+  if (!kept.length) return [];
+  const deletedSpans = words.filter((w) => w.deleted).map((w) => ({ start: w.start, end: w.end }));
+  const overlap = (a: Range, b: Range) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+
+  const bounds: Range[] = [];
+  if (kept[0].start > 0) bounds.push({ start: 0, end: kept[0].start });
+  for (let i = 0; i + 1 < kept.length; i++) {
+    if (kept[i + 1].start > kept[i].end) bounds.push({ start: kept[i].end, end: kept[i + 1].start });
+  }
+  const last = kept[kept.length - 1];
+  if (sourceDuration !== undefined && sourceDuration > last.end) bounds.push({ start: last.end, end: sourceDuration });
+
+  const out: Range[] = [];
+  for (const g of bounds) {
+    if (g.end - g.start + 1e-9 < settings.minGap) continue;
+    let unexplained = 0;
+    for (const r of speech) {
+      const inGap = overlap(r, g);
+      if (inGap <= 0) continue;
+      let explained = 0;
+      for (const d of deletedSpans) explained += overlap({ start: Math.max(r.start, g.start), end: Math.min(r.end, g.end) }, d);
+      unexplained += Math.max(0, inGap - explained);
+    }
+    if (unexplained > GAP_SPEECH_TOLERANCE) continue; // possible transcription hole: leave the pause alone
+    // No margin on an edge touching the program boundary (lead-in start / tail-out end):
+    // there's no adjacent kept speech there to protect, so the margin would just strand
+    // an uncut sliver of silence at position 0 or at sourceDuration.
+    const isLeadIn = g.start === 0;
+    const isTailOut = sourceDuration !== undefined && g.end === sourceDuration;
+    const start = g.start + (isLeadIn ? 0 : settings.margin);
+    const end = g.end - (isTailOut ? 0 : settings.margin);
+    if (end - start + 1e-9 >= MIN_CUT) out.push({ start, end });
+  }
+  return out;
+}
+
+function mergeRanges(ranges: Range[]): Range[] {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: Range[] = [];
+  for (const r of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end + 0.001) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+// A kept gap this short between two cuts, with no kept word in it, is a sliver
+// (a pause margin next to a word cut, or a deleted word too short to cut on its
+// own). Measured 2026-10-14: 14 of 80 clips under 0.1 s on a real project.
+export const MAX_SLIVER = 0.3;
+
+function closeSlivers(cuts: Range[], words: Word[]): Range[] {
+  const out: Range[] = [];
+  for (const c of cuts) {
+    const last = out[out.length - 1];
+    const gapHasSpeech = () => words.some((w) => !w.deleted && Math.min(w.end, c.start) - Math.max(w.start, last.end) > 0.01);
+    if (last && c.start - last.end < MAX_SLIVER && !gapHasSpeech()) last.end = Math.max(last.end, c.end);
+    else out.push({ ...c });
+  }
+  return out;
+}
+
+// The one cut list every consumer uses: deleted words plus tightened pauses plus guarded gap cuts.
+export function deriveCuts(project: { words: Word[]; pauses?: Range[]; speech?: Range[]; tightenPauses?: PauseSettings; sourceDuration?: number }): Range[] {
+  const words = computeCuts(project.words);
+  const pauses = pauseCuts(project.words, project.pauses, project.tightenPauses);
+  const gaps = gapCuts(project.words, project.speech, project.tightenPauses, project.sourceDuration);
+  const extra = [...pauses, ...gaps];
+  return closeSlivers(extra.length ? mergeRanges([...words, ...extra]) : words, project.words);
 }
 
 // Inverse: the segments of the source that survive.
@@ -89,7 +188,7 @@ export function programToSource(cuts: Range[], t: number): number {
 // ── Filler detection ────────────────────────────────────────────────────────
 const FILLERS = new Set([
   "um", "uh", "erm", "hmm",
-  "like",
+  // "like" is deliberately absent: it cut too many real phrases ("I'd like to", "stuff like that").
   "basically", "actually", "literally", "honestly", "seriously", "obviously",
   "sorta", "kinda",
 ]);

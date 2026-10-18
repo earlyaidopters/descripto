@@ -15,6 +15,7 @@ export default function Home({ initialProjects }: { initialProjects: Proj[] }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("recent");
+  const [deleting, setDeleting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const failedFile = useRef<File | null>(null);
   const importing = useRef(false);
@@ -50,6 +51,23 @@ export default function Home({ initialProjects }: { initialProjects: Proj[] }) {
     } catch (e) { setError((e as Error).message); setBusy(false); importing.current = false; }
   }
 
+  // Deletes the project folders (edits, transcript, renders and descripto's copy of the
+  // media). The original recording and CapCut exports live elsewhere and are not touched.
+  async function removeProjects(list: Proj[]) {
+    if (!list.length || deleting) return;
+    const what = list.length === 1 ? `"${list[0].name}"` : `${list.length} projects`;
+    if (!window.confirm(`Delete ${what}? This removes the edits, transcript, exports and descripto's copy of the video. Your original recording is not touched. This cannot be undone.`)) return;
+    setDeleting(true); setError("");
+    const failed: string[] = [];
+    for (const p of list) {
+      try { const r = await fetch(`/api/projects/${p.id}`, { method: "DELETE" }); if (!r.ok) failed.push(p.name); }
+      catch { failed.push(p.name); }
+    }
+    await load();
+    setDeleting(false);
+    if (failed.length) setError(`Could not delete: ${failed.join(", ")}.`);
+  }
+
   const visible = projects.filter(p => p.name.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || p.transcribed))
     .sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
@@ -71,16 +89,20 @@ export default function Home({ initialProjects }: { initialProjects: Proj[] }) {
             <h1 id="projects-heading">Projects <span>{projects.length}</span></h1>
             <div className="library-actions">
               <label className="search-field"><Icon name="search" size={16} /><input aria-label="Search projects" placeholder="Find a project…" value={query} onChange={e => setQuery(e.target.value)} />{query && <button aria-label="Clear search" onClick={() => setQuery("")}><Icon name="close" size={14} /></button>}</label>
+              {visible.length > 0 && <button className="btn-soft new-project-button" onClick={() => void removeProjects(visible)} disabled={busy || deleting} title={query || filter !== "all" ? "Delete the projects shown" : "Delete all projects"}>{deleting ? "Deleting…" : query || filter !== "all" ? `Clear ${visible.length} shown` : "Clear list"}</button>}
               <button className="btn-accent new-project-button" onClick={() => fileRef.current?.click()} disabled={busy}><Icon name={busy ? "wave" : "plus"} size={17} />{busy ? "Importing…" : "New project"}</button>
             </div>
           </div>
           <div className="library-filters"><div className="filter-tabs"><button aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All projects</button><button aria-pressed={filter === "ready"} onClick={() => setFilter("ready")}>Ready to edit</button></div><div className="sort-control"><select aria-label="Sort projects" value={sort} onChange={e => setSort(e.target.value)}><option value="recent">Newest first</option><option value="name">Name A–Z</option></select><Icon name="chevron" size={12} /></div></div>
           <div className="project-grid">
             {visible.map(p => (
-              <Link key={p.id} href={`/editor/${p.id}`} className="project-card">
+              <div key={p.id} className="project-card-wrap">
+              <Link href={`/editor/${p.id}`} className="project-card">
                 <div className="project-thumbnail"><Icon name="wave" size={40} /><video src={`/api/projects/${p.id}/media#t=0.1`} preload="metadata" muted playsInline aria-label={`${p.name} preview`} /><span className="project-duration">{fmtTime(p.duration)}</span><span className="project-open"><Icon name="arrow" /></span></div>
                 <div className="project-info"><h3>{p.name}</h3><div className="project-meta"><span>{new Date(p.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span><span className={`project-status ${p.transcribed ? "ready" : ""}`}><i />{p.transcribed ? "Ready to edit" : "Needs transcript"}</span></div></div>
               </Link>
+              <button className="project-delete" aria-label={`Delete ${p.name}`} title="Delete project" disabled={deleting} onClick={() => void removeProjects([p])}><Icon name="close" size={14} /></button>
+              </div>
             ))}
           </div>
           {!visible.length && <div className="empty-library"><Icon name={projects.length ? "search" : "film"} size={32} /><h3>{projects.length ? "No matching projects" : "Your next story starts here"}</h3><p>{projects.length ? "Try another name or switch to All projects." : "Import your first recording to start editing with text."}</p><button className="btn-soft" onClick={() => { if (projects.length) { setQuery(""); setFilter("all"); } else fileRef.current?.click(); }}>{projects.length ? "Clear filters" : "Choose a recording"}</button></div>}
