@@ -178,13 +178,13 @@ importers:
         version: 1.32.1(supports-color@7.2.0)(zod@4.6.5)
       next:
         specifier: 15.5.27
-        version: 15.5.27(@types/node@22.20.5)(react-dom@19.1.9(react@19.1.9))(react@19.1.9)
+        version: 15.5.27(@types/node@22.20.5)(react-dom@19.1.9(react@19.3.1))(react@19.3.1)
       react:
-        specifier: 19.1.9
-        version: 19.1.9
+        specifier: 19.3.1
+        version: 19.3.1
       react-dom:
         specifier: 19.1.9
-        version: 19.1.9(react@19.1.9)
+        version: 19.1.9(react@19.3.1)
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -1092,8 +1092,8 @@ packages:
     peerDependencies:
       react: ^19.1.9
 
-  react@19.1.9:
-    resolution: {integrity: sha512-vcH++wcuFsbaGkMBoghOSs7Caq9Xg4KbdGwNEC8hWXye9NbV/ryKpxuElvsQxj6/38TmVUw2BofUb7shrdQogA==}
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
   require-from-string@2.0.2:
@@ -1919,15 +1919,15 @@ snapshots:
     dependencies:
       content-type: 2.1.0
 
-  next@15.5.27(@types/node@22.20.5)(react-dom@19.1.9(react@19.1.9))(react@19.1.9):
+  next@15.5.27(@types/node@22.20.5)(react-dom@19.1.9(react@19.3.1))(react@19.3.1):
     dependencies:
       '@next/env': 15.5.27
       '@swc/helpers': 0.5.15
       caniuse-lite: 1.0.30001815
       postcss: 8.5.29
-      react: 19.1.9
-      react-dom: 19.1.9(react@19.1.9)
-      styled-jsx: 5.1.6(react@19.1.9)
+      react: 19.3.1
+      react-dom: 19.1.9(react@19.3.1)
+      styled-jsx: 5.1.6(react@19.3.1)
     optionalDependencies:
       '@next/swc-darwin-arm64': 15.5.27
       '@next/swc-darwin-x64': 15.5.27
@@ -1992,12 +1992,12 @@ snapshots:
       iconv-lite: 0.7.3
       unpipe: 1.0.0
 
-  react-dom@19.1.9(react@19.1.9):
+  react-dom@19.1.9(react@19.3.1):
     dependencies:
-      react: 19.1.9
+      react: 19.3.1
       scheduler: 0.26.0
 
-  react@19.1.9: {}
+  react@19.3.1: {}
 
   require-from-string@2.0.2: {}
 
@@ -2121,10 +2121,10 @@ snapshots:
 
   statuses@2.0.2: {}
 
-  styled-jsx@5.1.6(react@19.1.9):
+  styled-jsx@5.1.6(react@19.3.1):
     dependencies:
       client-only: 0.0.1
-      react: 19.1.9
+      react: 19.3.1
 
   sumchecker@3.0.1(supports-color@7.2.0):
     dependencies:
